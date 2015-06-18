@@ -1,0 +1,21 @@
+Name:               geometric-algebra
+Version:            0.1
+Synopsis:           Implementation of the operations of the geometric algebra
+License:            BSD3
+License-file:       LICENSE
+Author:             Rob Dockins
+Maintainer:         robdockins@fastmail.fm
+Copyright:          (c) Robert Dockins
+Category:           Math
+build-type:         Simple
+cabal-Version:      >= 1.18
+
+library
+  Hs-source-dirs:       src
+  Default-Language:     Haskell2010
+  Build-depends:
+    base >= 4,
+    containers
+
+  Exposed-modules:
+    Math.GeometricAlgebra
