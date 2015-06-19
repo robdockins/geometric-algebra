@@ -12,7 +12,9 @@ module Math.GeometricAlgebra
 , gaScalarMult
 , gaPart
 , gaGrades
-, gaPsudoscalar
+, gaOuterProd
+, gaLeftContraction
+, gaPseudoscalar
 , gaPseudoinverse
 , gaDual
 ) where
@@ -24,7 +26,6 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IntSet
-
 
 type GASig a = [a]
 
@@ -64,7 +65,7 @@ instance (Show a, Eq a, Fractional a) => Fractional (GA a) where
   fromRational = GAScalar . fromRational
   recip (GAScalar x) = GAScalar (recip x)
   recip x
-    | gaGrades x == IntSet.singleton 0 = 
+    | gaGrades x == IntSet.singleton 0 =
         case IntMap.lookup 0 (gaMap x) of
           Just a | a /= 0 -> GAScalar $ recip a
           Nothing -> error "Geometric Algebra: cannot recip the 0 scalar"
@@ -96,8 +97,8 @@ gaGrades (GAScalar c)
   | otherwise = IntSet.empty
 gaGrades x@GA{} = IntSet.fromList
   [ popCount i
-  | (i,_) <- IntMap.toList (gaMap x)
-  , i /= 0
+  | (i,c) <- IntMap.toList (gaMap x)
+  , c /= 0
   ]
 
 gaZero :: Num a => GA a
@@ -129,7 +130,7 @@ basisVec :: Num a => Int -> IntMap a
 basisVec i = IntMap.singleton (shiftL (1::Int) i) 1
 
 gaBasis :: Num a => GASig a -> [GA a]
-gaBasis sig = okSig sig $ 
+gaBasis sig = okSig sig $
   [ GA sig (basisVec i) | i <- [0 .. length sig-1] ]
 
 gaVector :: (Num a, Show a) => GASig a -> [a] -> GA a
@@ -146,19 +147,39 @@ gaVector sig xs
                 ]
 
 
-gaPsudoscalar :: Num a => GASig a -> GA a
-gaPsudoscalar sig = okSig sig $ GA sig $ IntMap.singleton k 1
+gaPseudoscalar :: Num a => GASig a -> GA a
+gaPseudoscalar sig = okSig sig $ GA sig $ IntMap.singleton k 1
    where k = 2^n - 1
          n = length sig
 
-gaPsudoinverse :: Num a => GASig a -> GA a
-gaPsudoinverse sig = okSig sig $ GA sig $ IntMap.singleton k x
+gaPseudoinverse :: Num a => GASig a -> GA a
+gaPseudoinverse sig = okSig sig $ GA sig $ IntMap.singleton k x
    where k = 2^n - 1
-         n = length sig 
+         n = length sig
          x = swapSign $ (n * (n-1)) `div` 2
-   
+
 gaDual :: (Show a, Eq a, Num a) => GA a -> GA a
-gaDual x = gaMult x (gaPsudoinverse (gaSig x))
+gaDual x = gaMult x (gaPseudoinverse (gaSig x))
+
+gaLeftContraction :: (Show a, Eq a, Num a) => GA a -> GA a -> GA a
+gaLeftContraction x y = sameSig x y $
+  foldr gaAdd gaZero
+  [ gaPart (j-i) $ gaMult (gaPart i x) (gaPart j y)
+  | i <- [0 .. n]
+  , j <- [0 .. n]
+  , i <= j
+  ]
+ where n = length (gaSig x)
+
+gaOuterProd :: (Show a, Eq a, Num a) => GA a -> GA a -> GA a
+gaOuterProd x y = sameSig x y $
+  foldr gaAdd gaZero
+  [ gaPart (i+j) $ gaMult (gaPart i x) (gaPart j y)
+  | i <- [0 .. n]
+  , j <- [0 .. n]
+  , i+j <= n
+  ]
+ where n = length (gaSig x)
 
 gaMult :: (Show a, Eq a, Num a) => GA a -> GA a -> GA a
 gaMult (GAScalar x) (GAScalar y) = GAScalar (x*y)
