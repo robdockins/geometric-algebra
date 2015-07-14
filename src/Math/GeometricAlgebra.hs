@@ -2,11 +2,13 @@
 
 module Math.GeometricAlgebra
 ( GA
+, GASig
 , gaBasis
 , gaVector
 , gaNorm
 , gaZero
 , gaAdd
+, gaReversion
 , gaMult
 , gaScalar
 , gaScalarMult
@@ -17,6 +19,7 @@ module Math.GeometricAlgebra
 , gaPseudoscalar
 , gaPseudoinverse
 , gaDual
+, gaScalarPart
 ) where
 
 import Data.Bits
@@ -84,6 +87,10 @@ sameSig m n x
                                 , show (gaSig m), show (gaSig n)
                                 ]
 
+gaScalarPart :: Num a => GA a -> a
+gaScalarPart (GAScalar x) = x
+gaScalarPart GA{ gaMap = m } = fromMaybe 0 (IntMap.lookup 0 m)
+
 gaPart :: Num a => Int -> GA a -> GA a
 gaPart 0 x@(GAScalar _) = x
 gaPart 0 x              = GAScalar $ fromMaybe 0 $ IntMap.lookup 0 (gaMap x)
@@ -114,6 +121,7 @@ gaScalar = GAScalar
 gaScalarMult :: Num a => a -> GA a -> GA a
 gaScalarMult x (GAScalar y) = GAScalar (x*y)
 gaScalarMult x mv@GA{ gaMap = m } = mv{ gaMap = fmap (x*) m }
+
 
 maybeAdd :: Num a => a -> Maybe a -> Maybe a
 maybeAdd x Nothing  = Just x
@@ -158,6 +166,18 @@ gaPseudoinverse sig = okSig sig $ GA sig $ IntMap.singleton k x
          n = length sig
          x = swapSign $ (n * (n-1)) `div` 2
 
+gaReversion :: Num a => GA a -> GA a
+gaReversion (GAScalar x) = GAScalar x
+gaReversion ga@GA{ gaMap =  m} = ga{ gaMap = IntMap.mapWithKey f m }
+  where f k x = swapSign ((n * (n-1)) `div` 2) * x
+          where n = popCount k
+
+gaParityConjugation :: Num a => GA a -> GA a
+gaParityConjugation (GAScalar x) = GAScalar x
+gaParityConjugation ga@GA{ gaMap = m } = ga{ gaMap = IntMap.mapWithKey f m }
+  where f k x = swapSign n * x
+          where n = popCount k
+
 gaDual :: (Show a, Eq a, Num a) => GA a -> GA a
 gaDual x = gaMult x (gaPseudoinverse (gaSig x))
 
@@ -197,6 +217,7 @@ gaMultOne :: Num a => GASig a -> Int -> Int -> a -> a -> IntMap a
 gaMultOne sig i j a b = IntMap.singleton k c
   where k = xor i j
         c = convConstant sig i j * a * b
+
 
 convConstant :: Num a => GASig a -> Int -> Int -> a
 convConstant sig = go 0
