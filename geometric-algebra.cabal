@@ -19,3 +19,17 @@ library
 
   Exposed-modules:
     Math.GeometricAlgebra
+
+executable main
+  Hs-source-dirs:      src
+  Default-Language:     Haskell2010
+  Build-depends:
+    base >= 4,
+    containers,
+    OpenGL,
+    StateVar,
+    GLFW-b,
+    frpnow,
+    frpnow-glfw
+
+  Main-is: Main.hs
