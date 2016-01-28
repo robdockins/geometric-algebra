@@ -1,6 +1,6 @@
 {-# LANGUAGE ParallelListComp #-}
 
-module Math.GeometricAlgebra
+module Math.GeometricAlgebraGL
 ( GA
 , mkSig
 , GASig
@@ -23,6 +23,8 @@ module Math.GeometricAlgebra
 , gaScalarPart
 ) where
 
+import Graphics.Rendering.OpenGL.GL
+
 import Data.Bits
 import Data.Foldable
 import Data.Maybe
@@ -31,33 +33,33 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IntSet
 
-newtype GASig a =
+newtype GASig =
    GASig
-   { sigElements :: ([a])
+   { sigElements :: ([GLdouble])
    }
 
-instance Show a => Show (GASig a) where
+instance Show GASig where
    show = show . sigElements
-instance Ord a => Ord (GASig a) where
+instance Ord GASig where
    compare x y = compare (sigElements x) (sigElements y)
-instance Eq a => Eq (GASig a) where
+instance Eq GASig where
    x == y = sigElements x == sigElements y
 
-data GA a
-  = GAScalar a
-  | GA { gaSig :: {-# UNPACK #-} !(GASig a)
-       , gaMap :: IntMap a
+data GA
+  = GAScalar GLdouble
+  | GA { gaSig :: {-# UNPACK #-} !GASig
+       , gaMap :: IntMap GLdouble
        }
  deriving ( Show )
 
 
-instance (Eq a) => Eq (GA a) where
+instance Eq GA where
   GAScalar x == GAScalar y       = x == y
   GAScalar x == GA{ gaMap = m } = m == IntMap.singleton 0 x
   GA{ gaMap = m } == GAScalar y = m == IntMap.singleton 0 y
   x@GA{} == y@GA{} = gaSig x == gaSig y && gaMap x == gaMap y
 
-instance (Ord a) => Ord (GA a) where
+instance Ord GA where
   compare (GAScalar x) (GAScalar y)      = compare x y
   compare (GAScalar x) y@GA{ gaMap = m } = compare (IntMap.singleton 0 x) m
   compare x@GA{ gaMap = m } (GAScalar y) = compare m (IntMap.singleton 0 y)
@@ -67,7 +69,7 @@ instance (Ord a) => Ord (GA a) where
        GT -> GT
        EQ -> compare (gaMap x) (gaMap y)
 
-instance (Show a, Eq a, Num a) => Num (GA a) where
+instance Num GA where
   x + y = gaAdd x y
   x * y = gaMult x y
   negate x = gaScalarMult (-1) x
@@ -75,7 +77,7 @@ instance (Show a, Eq a, Num a) => Num (GA a) where
   abs _ = error "Geometric Algebra does not support absolute value"
   signum _ = error "Geometric Algebra does not support signum"
 
-instance (Show a, Eq a, Fractional a) => Fractional (GA a) where
+instance Fractional GA where
   fromRational = GAScalar . fromRational
   recip (GAScalar x) = GAScalar (recip x)
   recip x
@@ -86,30 +88,30 @@ instance (Show a, Eq a, Fractional a) => Fractional (GA a) where
     | otherwise  = error "Geometric Algebra does not support recip except for scalars"
 
 
-okSig :: GASig a -> b -> b
+okSig :: GASig -> b -> b
 okSig sig x
   | length (sigElements sig) <= finiteBitSize (0::Int) = x
   | otherwise = error $ unwords ["GA signature too large"]
 
-sameSig :: (Show a, Eq a) => GA a -> GA a -> b -> b
+sameSig :: GA -> GA -> b -> b
 sameSig m n x
   | gaSig m == gaSig n = x
   | otherwise = error $ unwords ["incompatible signatures:"
                                 , show (gaSig m), show (gaSig n)
                                 ]
 
-gaScalarPart :: Num a => GA a -> a
+gaScalarPart :: GA -> GLdouble
 gaScalarPart (GAScalar x) = x
 gaScalarPart GA{ gaMap = m } = fromMaybe 0 (IntMap.lookup 0 m)
 
-gaPart :: Num a => Int -> GA a -> GA a
+gaPart :: Int -> GA -> GA
 gaPart 0 x@(GAScalar _) = x
 gaPart 0 x              = GAScalar $ fromMaybe 0 $ IntMap.lookup 0 (gaMap x)
 gaPart k (GAScalar _)   = gaZero
 gaPart k x =
   x{ gaMap = IntMap.filterWithKey (\i _ -> popCount i == k) (gaMap x) }
 
-gaGrades :: (Eq a, Num a) => GA a -> IntSet
+gaGrades :: GA -> IntSet
 gaGrades (GAScalar c)
   | c /= 0    = IntSet.singleton 1
   | otherwise = IntSet.empty
@@ -119,40 +121,40 @@ gaGrades x@GA{} = IntSet.fromList
   , c /= 0
   ]
 
-gaZero :: Num a => GA a
+gaZero :: GA
 gaZero = GAScalar 0
 
-gaNorm :: Num a => GA a -> a
+gaNorm :: GA -> GLdouble
 gaNorm (GAScalar x) = x*x
 gaNorm GA{ gaMap = m }= sum $ fmap (\x -> x*x) $ m
 
-gaScalar :: a -> GA a
+gaScalar :: GLdouble -> GA
 gaScalar = GAScalar
 
-gaScalarMult :: Num a => a -> GA a -> GA a
+gaScalarMult :: GLdouble -> GA -> GA
 gaScalarMult x (GAScalar y) = GAScalar (x*y)
 gaScalarMult x mv@GA{ gaMap = m } = mv{ gaMap = fmap (x*) m }
 
 
-maybeAdd :: Num a => a -> Maybe a -> Maybe a
+maybeAdd :: GLdouble -> Maybe GLdouble -> Maybe GLdouble
 maybeAdd x Nothing  = Just x
 maybeAdd x (Just y) = Just (x+y)
 
-gaAdd :: (Show a, Eq a, Num a) => GA a -> GA a -> GA a
+gaAdd :: GA -> GA -> GA
 gaAdd (GAScalar x) (GAScalar y)      = GAScalar (x+y)
 gaAdd (GAScalar x) y@GA{ gaMap = m } = y{ gaMap = IntMap.alter (maybeAdd x) 0 m }
 gaAdd x@GA{ gaMap = m } (GAScalar y) = x{ gaMap = IntMap.alter (maybeAdd y) 0 m }
 gaAdd x@GA{} y@GA{} = sameSig x y $
     x{ gaMap = IntMap.unionWith (+) (gaMap x) (gaMap y) }
 
-basisVec :: Num a => Int -> IntMap a
+basisVec :: Int -> IntMap GLdouble
 basisVec i = IntMap.singleton (shiftL (1::Int) i) 1
 
-gaBasis :: Num a => GASig a -> [GA a]
+gaBasis :: GASig -> [GA]
 gaBasis sig = okSig sig $
   [ GA sig (basisVec i) | i <- [0 .. length (sigElements sig)-1] ]
 
-gaVector :: (Num a, Show a) => GASig a -> [a] -> GA a
+gaVector :: GASig -> [GLdouble] -> GA
 gaVector sig xs
   | length (sigElements sig) == length xs = okSig sig $ GA sig $
      IntMap.fromList
@@ -166,33 +168,33 @@ gaVector sig xs
                 ]
 
 
-gaPseudoscalar :: Num a => GASig a -> GA a
+gaPseudoscalar :: GASig -> GA
 gaPseudoscalar sig = okSig sig $ GA sig $ IntMap.singleton k 1
    where k = 2^n - 1
          n = length (sigElements sig)
 
-gaPseudoinverse :: Num a => GASig a -> GA a
+gaPseudoinverse :: GASig -> GA
 gaPseudoinverse sig = okSig sig $ GA sig $ IntMap.singleton k x
    where k = 2^n - 1
          n = length (sigElements sig)
          x = swapSign ((n * (n-1)) `div` 2) 1
 
-gaReversion :: Num a => GA a -> GA a
+gaReversion :: GA -> GA
 gaReversion (GAScalar x) = GAScalar x
 gaReversion ga@GA{ gaMap =  m} = ga{ gaMap = IntMap.mapWithKey f m }
   where f k x = swapSign ((n * (n-1)) `div` 2) $ x
           where n = popCount k
 
-gaParityConjugation :: Num a => GA a -> GA a
+gaParityConjugation :: GA -> GA
 gaParityConjugation (GAScalar x) = GAScalar x
 gaParityConjugation ga@GA{ gaMap = m } = ga{ gaMap = IntMap.mapWithKey f m }
   where f k x = swapSign n $ x
           where n = popCount k
 
-gaDual :: (Show a, Eq a, Num a) => GA a -> GA a
+gaDual :: GA -> GA
 gaDual x = gaMult x (gaPseudoinverse (gaSig x))
 
-gaLeftContraction :: (Show a, Eq a, Num a) => GA a -> GA a -> GA a
+gaLeftContraction :: GA -> GA -> GA
 gaLeftContraction x y = sameSig x y $
   foldr gaAdd gaZero
   [ gaPart (j-i) $ gaMult (gaPart i x) (gaPart j y)
@@ -202,7 +204,7 @@ gaLeftContraction x y = sameSig x y $
   ]
  where n = length (sigElements (gaSig x))
 
-gaOuterProd :: (Show a, Eq a, Num a) => GA a -> GA a -> GA a
+gaOuterProd :: GA -> GA -> GA
 gaOuterProd x y = sameSig x y $
   foldr gaAdd gaZero
   [ gaPart (i+j) $ gaMult (gaPart i x) (gaPart j y)
@@ -212,7 +214,7 @@ gaOuterProd x y = sameSig x y $
   ]
  where n = length (sigElements (gaSig x))
 
-gaMult :: (Show a, Eq a, Num a) => GA a -> GA a -> GA a
+gaMult :: GA -> GA -> GA
 gaMult (GAScalar x) (GAScalar y) = GAScalar (x*y)
 gaMult (GAScalar x) y@GA{} = gaScalarMult x y
 gaMult x@GA{} (GAScalar y) = gaScalarMult y x
@@ -224,17 +226,17 @@ gaMult x y = sameSig x y $
             , (j,b) <- IntMap.toList (gaMap y)
             ]
 
-gaMultOne :: Num a => GASig a -> Int -> Int -> a -> a -> IntMap a
+gaMultOne :: GASig -> Int -> Int -> GLdouble -> GLdouble -> IntMap GLdouble
 gaMultOne sig i j a b = IntMap.singleton k c
   where k = xor i j
         c = convConstant (sigElements sig) i j * a * b
 --        c = conversionMemoMap sig i j * a * b
 
-mkSig :: Num a => [a] -> GASig a
+mkSig :: [GLdouble] -> GASig
 mkSig sigElts = GASig sigElts
 
 
-convConstant :: Num a => [a] -> Int -> Int -> a
+convConstant :: [GLdouble] -> Int -> Int -> GLdouble
 convConstant = go 0 1
  where go _    ans []     _ _ = ans
        go bit  ans (x:xs) i j
@@ -254,7 +256,7 @@ convConstant = go 0 1
               j' = clearBit j bit
 
 {-# INLINE swapSign #-}
-swapSign :: Num a => Int -> a -> a
+swapSign :: Int -> GLdouble -> GLdouble
 swapSign i x
   | even i    = x
   | otherwise = negate x

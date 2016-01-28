@@ -1,4 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RankNTypes #-}
+
 
 import Control.Exception
 import Control.Concurrent.Chan
@@ -18,9 +20,8 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import System.IO.Unsafe
 
-import Math.GeometricAlgebra
+import Math.GeometricAlgebraGL
 import Control.FRPNow.Core
-import Control.FRPNow.Lib
 import Control.FRPNow.EvStream
 import Control.FRPNow.GLFW
 
@@ -30,55 +31,64 @@ initialWinSize :: (Int,Int)
 initialWinSize = (900,900)
 
 main :: IO ()
-main = runGLFW
-  (GLFW.createWindow (fst initialWinSize) (snd initialWinSize)
-        "Gravity pool" Nothing Nothing)
+main = runGLFW mkwin setup
 
-  (\win tevs -> do
-       kevs  <- keyEvents win
-       mbevs <- mouseButtonEvents win
-       rszevs <- resizeEvents win
-       pos   <- mousePos win
+mkwin :: IO (Maybe (GLFW.Window))
+mkwin =
+  GLFW.createWindow
+     (fst initialWinSize)
+     (snd initialWinSize)
+     "Gravity pool"
+     Nothing
+     Nothing
 
-       sync $ resize win initialWinSize
-       callIOStream (resize win) rszevs
+evStreamTransducer
+  :: forall a b st
+   . (st -> b -> (st, Maybe a))
+  -> st
+  -> EvStream b
+  -> Behavior (EvStream a)
+evStreamTransducer update init evs = do
+  let f :: (st, Maybe a) -> b -> (st, Maybe a)
+      f (st, _) b = update st b
+  filterMapEs snd <$> scanlEv f (init, Nothing) evs
 
-       let timepos = fmap (\p t -> FrameEv t p) pos <@@> tevs
+setup :: GLFW.Window
+      -> Behavior Double
+      -> EvStream (Double, Double)
+      -> Now (Behavior (IO ()))
+setup win clock timer = do
+   kevs   <- keyEvents win
+   mbevs  <- mouseButtonEvents win
+   rszevs <- resizeEvents win
+   pos    <- mousePos win
 
-       states <- sampleNow $ foldEs updateState
-                             initialState
-                             (merge (fmap ResizeEv rszevs)
-                             (merge (fmap KeyEv kevs)
-                             (merge (fmap MouseEv mbevs)
-                                    timepos)))
+   sync $ resize win initialWinSize
+   callIOStream (resize win) rszevs
 
-       let renders = snapshots (fmap (renderFrame win) states)
-                               (fmap (const ()) tevs)
+   let allEvs =
+          fmap ResizeEv rszevs
+          `merge`
+          fmap KeyEv kevs
+          `merge`
+          fmap MouseEv mbevs
+          `merge`
+          fmap FrameEv timer
 
-       sync $ GLFW.swapInterval 1
-       sync $ GLFW.setCursorInputMode win GLFW.CursorInputMode'Hidden
+   let upd st ev = foldl updateState st (filterEv ev)
+   states <- sampleNow $ foldEs upd initialState allEvs
 
-       return renders)
+   let renders = renderFrame win <$> states <*> pos
 
-resize :: GLFW.Window -> (Int,Int) -> IO ()
-resize win (w,h) = do
-  GL.viewport $= (GL.Position 0 0, GL.Size (fromIntegral w) (fromIntegral h))
-  GL.matrixMode $= GL.Projection
-  GL.loadIdentity
---  GL.frustum l r b t (realToFrac nearPlane) (realToFrac farPlane)
-  GL.ortho l r b t (realToFrac nearPlane) (realToFrac farPlane)
- where
-  (iw,ih) = initialWinSize
+   sync $ GLFW.swapInterval 1
+   sync $ GLFW.setCursorInputMode win GLFW.CursorInputMode'Hidden
 
-  l = -r
-  r = realToFrac w / realToFrac iw
+   return renders
 
-  b = -t
-  t = realToFrac h / realToFrac ih
-
-nearPlane :: Double
-farPlane :: Double  
+nearPlane :: GL.GLdouble
 nearPlane =  0.5
+
+farPlane :: GL.GLdouble
 farPlane  = 1000.0
 
 
@@ -88,96 +98,141 @@ data State
    , epi :: V
    , polyR :: V
    , col :: C
-   , rate :: Double
+   , rate :: GL.GLdouble
    , sides :: Int
-   , mpos :: V
-   , pstart :: Maybe (Double, V)
+   , pstart :: Maybe (GL.GLdouble, V)
    , particles :: Seq Particle
    , winSize :: (Int, Int)
+   , displaySpinner :: Bool
    }
 
-type Particle = (Double, V, V)
+type Particle = (GL.GLdouble, V, V)
 
 swap (GL.Color4 a b c d) = GL.Color4 c a b d
 
 data Ev
- = FrameEv (Double,Double) (Double,Double)
+ = FrameEv (Double,Double)
  | KeyEv KeyEv
  | MouseEv MouseEv
  | ResizeEv (Int,Int)
 
-updateState :: State
-            -> Ev
-            -> State
-updateState st (KeyEv (k,kst,mod))
-  |   (kst == GLFW.KeyState'Pressed || kst == GLFW.KeyState'Repeating)
-  &&  k   == GLFW.Key'Left =
-  st{ sides = sides st - 1 }
+data GameEv
+ = IncSides Int
+ | IncSpin Int
+ | ToggleSpinner
+ | PlaceSpinner (Double, Double)
+ | StartParticle (Double, Double)
+ | EndParticle (Double, Double)
+ | IncMass Int
+ | SwapColor
+ | TimerEvent Double
+ | Resize (Int,Int)
 
-updateState st (KeyEv (k,kst,mod))
+filterEv :: Ev -> [GameEv]
+filterEv (KeyEv (k,kst,mod))
   |   (kst == GLFW.KeyState'Pressed || kst == GLFW.KeyState'Repeating)
-  &&  k   == GLFW.Key'Right =
-  st{ sides = sides st + 1 }
+  &&  k   == GLFW.Key'Left
+  = [IncSides (-1)]
 
-updateState st (KeyEv (k,kst,mod))
   |   (kst == GLFW.KeyState'Pressed || kst == GLFW.KeyState'Repeating)
-  &&  k   == GLFW.Key'Up =
-  st{ rate = rate st + 0.1 }
+  &&  k   == GLFW.Key'Right
+  = [IncSides 1]
 
-updateState st (KeyEv (k,kst,mod))
   |   (kst == GLFW.KeyState'Pressed || kst == GLFW.KeyState'Repeating)
-  &&  k   == GLFW.Key'Down =
-  st{ rate = rate st - 0.1 }
+  &&  k   == GLFW.Key'Enter
+  = [ToggleSpinner]
 
-updateState st (KeyEv (k,kst,mod))
+  |   (kst == GLFW.KeyState'Pressed || kst == GLFW.KeyState'Repeating)
+  &&  k   == GLFW.Key'Down
+  = [IncSpin (-1)]
+
+  |   (kst == GLFW.KeyState'Pressed || kst == GLFW.KeyState'Repeating)
+  &&  k   == GLFW.Key'Up
+  = [IncSpin 1]
+
   |   (kst == GLFW.KeyState'Pressed || kst == GLFW.KeyState'Repeating)
   &&  k   == GLFW.Key'Equal
-  , Just (mass, start) <- pstart st =
-  st{ pstart = Just (mass * 1.1, start) }
+  = [IncMass 1]
 
-updateState st (KeyEv (k,kst,mod))
-  | kst == GLFW.KeyState'Pressed =
+  |   (kst == GLFW.KeyState'Pressed || kst == GLFW.KeyState'Repeating)
+  &&  k   == GLFW.Key'Minus
+  = [IncMass (-1)]
+
+  | kst == GLFW.KeyState'Pressed
+  = [SwapColor]
+
+filterEv (MouseEv (btn,btnst,_,x,y))
+  |    btn == GLFW.MouseButton'1
+  && btnst == GLFW.MouseButtonState'Pressed
+  = [PlaceSpinner (x,y)]
+
+  |    btn == GLFW.MouseButton'2
+  && btnst == GLFW.MouseButtonState'Pressed
+  = [StartParticle (x,y)]
+
+  |    btn == GLFW.MouseButton'2
+  && btnst == GLFW.MouseButtonState'Released
+  = [EndParticle (x,y)]
+
+filterEv (FrameEv (_,dt))
+  = [TimerEvent dt]
+
+filterEv (ResizeEv (h,w))
+  = [Resize (h,w)]
+
+filterEv _ = []
+
+
+updateState :: State
+            -> GameEv
+            -> State
+updateState st (IncSides x) =
+  st{ sides = sides st + x }
+
+updateState st (IncSpin x) =
+  st{ rate = rate st + (realToFrac x) * 0.1 }
+
+updateState st (IncMass x)
+  | Just (mass, start) <- pstart st =
+  st{ pstart = Just (mass * 1.1**(realToFrac x), start) }
+
+updateState st ToggleSpinner =
+  st{ displaySpinner = not $ displaySpinner st }
+
+updateState st SwapColor =
   st{ col = swap (col st) }
 
-updateState st (MouseEv (btn,btnst,_,x,y))
-  |    btn   == GLFW.MouseButton'1
-    && btnst == GLFW.MouseButtonState'Pressed =
-  st{ pos = invertMouse (winSize st) (x,y) }
+updateState st (PlaceSpinner (x,y)) =
+  st{ pos = invertMouse (winSize st) (realToFrac x, realToFrac y) }
 
-updateState st (MouseEv (btn,btnst,_,x,y))
-  |    btn   == GLFW.MouseButton'2
-    && btnst == GLFW.MouseButtonState'Pressed =
-  st{ pstart = Just (2e6, invertMouse (winSize st) (x,y)) }
+updateState st (StartParticle (x,y)) =
+  st{ pstart = Just (2e6, invertMouse (winSize st) (realToFrac x, realToFrac y)) }
 
-updateState st (ResizeEv sz) =
+updateState st (EndParticle (x,y))
+  | Just (mass,start) <- pstart st =
+    let end = invertMouse (winSize st) (realToFrac x,realToFrac y)
+        diff = end - start - gaScalarMult 0.01 e2
+        newp = (mass, start, diff)
+     in st{ particles = newp Seq.<| particles st
+          , pstart    = Nothing
+          }
+
+updateState st (Resize sz) =
   st{ winSize = sz }
 
-updateState st (MouseEv (btn,btnst,_,x,y))
-  |    btn   == GLFW.MouseButton'2
-    && btnst == GLFW.MouseButtonState'Released
-  , Just (mass,start) <- pstart st =
-   let end = invertMouse (winSize st) (x,y)
-       diff = end - start - gaScalarMult 0.01 e2
-       newp = (mass, start, diff)
-    in st{ particles = newp Seq.<| particles st
-         , pstart    = Nothing
-         }
-
-updateState st (FrameEv (_,dt) m) =
+updateState st (TimerEvent dt') =
+  let dt = realToFrac dt' in
   st{ pos = updatePos dt (pos st)
     , epi = updateEpi (rate st * dt) (epi st)
     , polyR = updateEpi (-3.0 * rate st * dt) (polyR st)
-    , mpos = invertMouse (winSize st) m
     , particles = updateParticles dt (particles st)
     }
 
-updateState st _ = st
 
-
-g :: Double
+g :: GL.GLdouble
 g = 6.673e-11
 
-updateParticles :: Double -> Seq Particle -> Seq Particle
+updateParticles :: GL.GLdouble -> Seq Particle -> Seq Particle
 updateParticles dt ps =
   let len = Seq.length ps
       forces = Seq.fromList
@@ -206,8 +261,8 @@ filterCollide [] = []
 filterCollide ((_,_,Nothing):xs) = filterCollide xs
 filterCollide ((i,j,Just x) :xs) = (i,j,x) : filterCollide xs
 
-firstCollision :: [(Int,Int,(Double,[Particle],[Particle]))] ->
-                   Maybe (Int,Int,(Double,[Particle],[Particle]))
+firstCollision :: [(Int,Int,(GL.GLdouble,[Particle],[Particle]))] ->
+                   Maybe (Int,Int,(GL.GLdouble,[Particle],[Particle]))
 firstCollision = foldl f Nothing
  where
   f Nothing x = Just x
@@ -220,10 +275,10 @@ deleteFromSeq i seq =
      front Seq.>< (Seq.drop 1 back)
  where (front, back) = Seq.splitAt i seq
 
-advanceParticle :: Double -> Particle -> Particle
+advanceParticle :: GL.GLdouble -> Particle -> Particle
 advanceParticle dt (mass,pos,vel) = (mass, pos + gaScalarMult dt vel, vel)
 
-collideParticles :: Double -> Double -> Seq Particle -> Seq Particle -> Seq Particle
+collideParticles :: GL.GLdouble -> GL.GLdouble -> Seq Particle -> Seq Particle -> Seq Particle
 collideParticles min_soln dt start end =
    case firstCollision allCollisions of
      Nothing -> end
@@ -245,7 +300,7 @@ collideParticles min_soln dt start end =
                         ]
 
 
-pmass :: Particle -> Double
+pmass :: Particle -> GL.GLdouble
 pmass (m,_,_) = m
 
 ppos :: Particle -> V
@@ -254,11 +309,11 @@ ppos (_,p,_) = p
 pvel :: Particle -> V
 pvel (_,_,v) = v
 
-tryCollide1 :: Double
-            -> Double
+tryCollide1 :: GL.GLdouble
+            -> GL.GLdouble
             -> (Particle, Particle)
             -> (Particle, Particle)
-            -> Maybe (Double, [Particle], [Particle])
+            -> Maybe (GL.GLdouble, [Particle], [Particle])
 tryCollide1 min_soln dt (start1, end1) (start2, end2) =
   if discrim >= 0 && min_soln < soln && soln <= 1
      then {-Debug.trace (unlines [ "dt = " ++ show dt
@@ -386,7 +441,7 @@ tryCollide1 min_soln dt (start1, end1) (start2, end2) =
 
 invertMouse :: (Int,Int) -> (Double,Double) -> V
 {-
-invertMouse (winWidth,winHeight) (x,y) = 
+invertMouse (winWidth,winHeight) (x,y) =
   let GL.Vertex3 a b c = unsafePerformIO $ do
         (mv :: GL.GLmatrix GL.GLdouble) <- get (GL.matrix (Just (GL.Modelview 0)))
         (pj :: GL.GLmatrix GL.GLdouble) <- get (GL.matrix (Just (GL.Projection)))
@@ -404,7 +459,7 @@ invertMouse (winWidth,winHeight) (x,y) =
       (iw,ih) = initialWinSize
       x' =  (2*x - w) / realToFrac iw
       y' = -(2*y - h) / realToFrac ih
-   in gaVector sig3D [x',y',0]
+   in gaVector sig3D [realToFrac x', realToFrac y', 0]
 
 
 initialState :: State
@@ -415,33 +470,50 @@ initialState = State
   (GL.Color4 0 1.0 0.5 1.0)
   1.0
   5
-  0
   Nothing
   Seq.empty
   initialWinSize
+  True
 
-renderFrame :: GLFW.Window -> State -> IO ()
-renderFrame win st = do
+resize :: GLFW.Window -> (Int,Int) -> IO ()
+resize win (w,h) = do
+  GL.viewport $= (GL.Position 0 0, GL.Size (fromIntegral w) (fromIntegral h))
+  GL.matrixMode $= GL.Projection
+  GL.loadIdentity
+--  GL.frustum l r b t (realToFrac nearPlane) (realToFrac farPlane)
+  GL.ortho l r b t (realToFrac nearPlane) (realToFrac farPlane)
+ where
+  (iw,ih) = initialWinSize
+
+  l = -r
+  r = realToFrac w / realToFrac iw
+
+  b = -t
+  t = realToFrac h / realToFrac ih
+
+renderFrame :: GLFW.Window -> State -> (Double, Double) -> IO ()
+renderFrame win st mpos = do
   GL.clear [GL.ColorBuffer]
 
   mapM_ renderParticle (particles st)
 
-  --GL.currentColor $= GL.Color4 1.0 1.0 1.0 1.0
-  --regularPolygon 8 (0.3*(polyR st)) (pos st)
+  when (displaySpinner st) $ do
+    GL.currentColor $= GL.Color4 1.0 1.0 1.0 1.0
+    regularPolygon 8 (0.3*(polyR st)) (pos st)
 
-  --GL.currentColor $= (col st)
-  --regularPolygon (sides st) (polyR st) (pos st + epi st)
+    GL.currentColor $= (col st)
+    regularPolygon (sides st) (polyR st) (pos st + epi st)
 
   case pstart st of
     Just (mass,pos) -> do
        renderParticle (mass,pos,0)
 
     Nothing -> do
-       x <- invertMouse (winSize st) <$> GLFW.getCursorPos win
+       let x = invertMouse (winSize st) mpos
        GL.currentColor $= GL.Color4 0.5 0.5 0.5 1.0
        regularPolygon 6 (gaVector sig3D [0.01,0,0]) x
 
-particleRadius :: Particle -> Double
+particleRadius :: Particle -> GL.GLdouble
 particleRadius (mass,_,_) =
   5.0e-5 * ((realToFrac mass) ** (1/3))
 
@@ -469,11 +541,11 @@ regularPolygon n arm pos = do
      | i <- [ 0 .. n-1 ]
      ]
 
-type V = GA Double
+type V = GA
 type C = GL.Color4 GL.GLfloat
 
-sig3D :: GASig Double
-sig3D = [1.0, 1.0, 1.0]
+sig3D :: GASig
+sig3D = mkSig [1.0, 1.0, 1.0]
 
 basis3D :: [V]
 basis3D = gaBasis sig3D
@@ -490,18 +562,18 @@ i = e0 * e1 * e2
 reflectVec :: V -> V -> V
 reflectVec b x = b * x * gaScalarMult (1 / gaNorm b) (gaReversion b)
 
-rotOp :: Double -> V -> V
+rotOp :: GL.GLdouble -> V -> V
 rotOp θ i =
   let v = gaVector sig3D [ cos (θ/2), sin (θ/2), 0 ]
    in ( e0 * v )
 
-rot :: Double -> V -> V
+rot :: GL.GLdouble -> V -> V
 rot θ v =
   let s = rotOp θ i
    in s * v * gaReversion s
 
-updatePos :: Double -> V -> V
+updatePos :: GL.GLdouble -> V -> V
 updatePos dt v = rot ((pi/4)*dt) v
 
-updateEpi :: Double -> V -> V
+updateEpi :: GL.GLdouble -> V -> V
 updateEpi dt v = rot (3*pi*dt) v

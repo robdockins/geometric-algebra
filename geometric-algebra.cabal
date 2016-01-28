@@ -15,10 +15,14 @@ library
   Default-Language:     Haskell2010
   Build-depends:
     base >= 4,
+    OpenGL,
     containers
+
+  Ghc-Options: -O2
 
   Exposed-modules:
     Math.GeometricAlgebra
+    Math.GeometricAlgebraGL
 
 executable main
   Hs-source-dirs:      src
@@ -33,3 +37,4 @@ executable main
     frpnow-glfw
 
   Main-is: Main.hs
+  Ghc-Options: -O2

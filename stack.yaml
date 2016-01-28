@@ -1,3 +1,7 @@
+ghc-options:
+  '*': -rtsopts
+  geometric-algebra: -rtsopts -auto-all -O2
+
 packages:
 - '.'
 - '../FRPNow'
@@ -11,4 +15,4 @@ extra-deps:
 - OpenGLRaw-2.5.2.1
 - bindings-GLFW-3.1.1.4
 
-resolver: lts-3.3
+resolver: lts-4.2
